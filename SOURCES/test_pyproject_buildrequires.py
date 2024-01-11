@@ -1,11 +1,15 @@
 from pathlib import Path
 import importlib.metadata
 
+import packaging.version
 import pytest
+import setuptools
 import yaml
 
 from pyproject_buildrequires import generate_requires
 
+SETUPTOOLS_VERSION = packaging.version.parse(setuptools.__version__)
+SETUPTOOLS_60 = SETUPTOOLS_VERSION >= packaging.version.parse('60')
 
 testcases = {}
 with Path(__file__).parent.joinpath('pyproject_buildrequires_testcases.yaml').open() as f:
@@ -21,12 +25,16 @@ def test_data(case_name, capfd, tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     wheeldir = cwd.joinpath('wheeldir')
     wheeldir.mkdir()
+    output = tmp_path.joinpath('output.txt')
 
     if case.get('xfail'):
         pytest.xfail(case.get('xfail'))
 
+    if case.get('skipif') and eval(case.get('skipif')):
+        pytest.skip(case.get('skipif'))
+
     for filename in case:
-        file_types = ('.toml', '.py', '.in', '.ini', '.txt')
+        file_types = ('.toml', '.py', '.in', '.ini', '.txt', '.cfg')
         if filename.endswith(file_types):
             cwd.joinpath(filename).write_text(case[filename])
 
@@ -54,6 +62,8 @@ def test_data(case_name, capfd, tmp_path, monkeypatch):
             generate_extras=case.get('generate_extras', False),
             requirement_files=requirement_files,
             use_build_system=use_build_system,
+            output=output,
+            config_settings=case.get('config_settings'),
         )
     except SystemExit as e:
         assert e.code == case['result']
@@ -69,14 +79,15 @@ def test_data(case_name, capfd, tmp_path, monkeypatch):
         assert 'expected' in case or 'stderr_contains' in case
 
         out, err = capfd.readouterr()
+        dependencies = output.read_text()
 
         if 'expected' in case:
             expected = case['expected']
             if isinstance(expected, list):
                 # at least one of them needs to match
-                assert any(out == e for e in expected)
+                assert dependencies in expected
             else:
-                assert out == expected
+                assert dependencies == expected
 
         # stderr_contains may be a string or list of strings
         stderr_contains = case.get('stderr_contains')

@@ -2,9 +2,10 @@ Name:           pyproject-rpm-macros
 Summary:        RPM macros for PEP 517 Python packages
 License:        MIT
 
-# Disable tests on RHEL9 as to not pull in the test dependencies
-# Specify --with tests to run the tests e.g. on EPEL
-%bcond_with tests
+%bcond tests 1
+# pytest-xdist and tox are not desired in RHEL
+%bcond pytest_xdist %{undefined rhel}
+%bcond tox_tests %{undefined rhel}
 
 # The idea is to follow the spirit of semver
 # Given version X.Y.Z:
@@ -12,7 +13,7 @@ License:        MIT
 #   Increment Y and reset Z when new macros or features are added
 #   Increment Z when this is a bugfix or a cosmetic change
 # Dropping support for EOL Fedoras is *not* considered a breaking change
-Version:        1.6.2
+Version:        1.9.0
 Release:        1%{?dist}
 
 # Macro files
@@ -49,14 +50,26 @@ BuildArch:      noarch
 
 %if %{with tests}
 BuildRequires:  python3dist(pytest)
+%if %{with pytest_xdist}
 BuildRequires:  python3dist(pytest-xdist)
+%endif
 BuildRequires:  python3dist(pyyaml)
 BuildRequires:  python3dist(packaging)
 BuildRequires:  python3dist(pip)
 BuildRequires:  python3dist(setuptools)
+%if %{with tox_tests}
 BuildRequires:  python3dist(tox-current-env) >= 0.0.6
+%endif
 BuildRequires:  python3dist(wheel)
-BuildRequires:  (python3dist(toml) if python3-devel < 3.11)
+BuildRequires:  (python3dist(tomli) if python3 < 3.11)
+
+# RHEL 9: We also run pytest with Python 3.11
+BuildRequires:  python3.11dist(pytest)
+BuildRequires:  python3.11dist(pyyaml)
+BuildRequires:  python3.11dist(packaging)
+BuildRequires:  python3.11dist(pip)
+BuildRequires:  python3.11dist(setuptools)
+BuildRequires:  python3.11dist(wheel)
 %endif
 
 # We build on top of those:
@@ -120,10 +133,21 @@ install -pm 644 pyproject_construct_toxenv.py %{buildroot}%{_rpmconfigdir}/redha
 install -pm 644 pyproject_requirements_txt.py %{buildroot}%{_rpmconfigdir}/redhat/
 install -pm 644 pyproject_wheel.py %{buildroot}%{_rpmconfigdir}/redhat/
 
-%if %{with tests}
 %check
+# assert the two signatures of %%pyproject_buildrequires match exactly
+signature1="$(grep '^%%pyproject_buildrequires' macros.pyproject | cut -d' ' -f1)"
+signature2="$(grep '^%%pyproject_buildrequires' macros.aaa-pyproject-srpm | cut -d' ' -f1)"
+test "$signature1" == "$signature2"
+# but also assert we are not comparing empty strings
+test "$signature1" != ""
+
+%if %{with tests}
 export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856356
-%pytest -vv --doctest-modules -n auto
+%pytest -vv --doctest-modules %{?with_pytest_xdist:-n auto} %{!?with_tox_tests:-k "not tox"}
+
+# RHEL 9 only:
+%global __pytest %{__pytest}-3.11
+%pytest -vv --doctest-modules -k "not tox"
 
 # brp-compress is provided as an argument to get the right directory macro expansion
 %{python3} compare_mandata.py -f %{_rpmconfigdir}/brp-compress
@@ -149,6 +173,29 @@ export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856
 
 
 %changelog
+* Wed May 31 2023 Maxwell G <maxwell@gtmx.me> - 1.9.0-1
+- Allow passing config_settings to the build backend.
+
+* Wed May 31 2023 Miro Hrončok <mhroncok@redhat.com> - 1.8.1-1
+- On Python older than 3.11, use tomli instead of deprecated toml
+- Fix literal %% handling in %%{pyproject_files} on RPM 4.19
+
+* Tue May 23 2023 Miro Hrončok <mhroncok@redhat.com> - 1.8.0-2
+- Rebuilt for ELN dependency changes
+
+* Thu Apr 27 2023 Miro Hrončok <mhroncok@redhat.com> - 1.8.0-1
+- %%pyproject_buildrequires: Add support for self-referential extras requirements
+- Deprecate the provisional %%{pyproject_build_lib} macro
+  See https://lists.fedoraproject.org/archives/list/python-devel@lists.fedoraproject.org/thread/HMLOPAU3RZLXD4BOJHTIPKI3I4U6U7OE/
+
+* Fri Mar 31 2023 Miro Hrončok <mhroncok@redhat.com> - 1.7.0-1
+- %%pyproject_buildrequires: Redirect stdout to stderr via Shell
+- Dependencies are recorded to a text file that is catted at the end
+
+* Mon Feb 13 2023 Lumír Balhar <lbalhar@redhat.com> - 1.6.3-1
+- Remove .dist-info directory at the end of %%pyproject_buildrequires
+- An incomplete .dist-info directory in $PWD can confuse tests in %%check
+
 * Wed Feb 08 2023 Lumír Balhar <lbalhar@redhat.com> - 1.6.2-1
 - Improve detection of lang files
 

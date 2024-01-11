@@ -17,7 +17,7 @@ Insufficient version of setuptools:
   installed:
     setuptools: 5
     wheel: 1
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     # empty
   setup.py: |
@@ -42,7 +42,7 @@ Default build system, empty setup.py:
   installed:
     setuptools: 50
     wheel: 1
-    toml: 1
+    tomli: 1
   include_runtime: false
   pyproject.toml: |
     # empty
@@ -58,7 +58,7 @@ pyproject.toml with build-backend and setup.py:
   installed:
     setuptools: 50
     wheel: 1
-    toml: 1
+    tomli: 1
   setup.py: |
     # empty
   pyproject.toml: |
@@ -81,7 +81,7 @@ Erroring setup.py:
 
 Bad character in version:
   installed:
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = ["pkg == 0.$.^.*"]
@@ -89,7 +89,7 @@ Bad character in version:
 
 Single value version with unsupported compatible operator:
   installed:
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = ["pkg ~= 42", "foo"]
@@ -98,7 +98,7 @@ Single value version with unsupported compatible operator:
 
 Asterisk in version with unsupported compatible operator:
   installed:
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = ["pkg ~= 0.1.*", "foo"]
@@ -107,7 +107,7 @@ Asterisk in version with unsupported compatible operator:
 
 Local path as requirement:
   installed:
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = ["./pkg-1.2.3.tar.gz", "foo"]
@@ -116,7 +116,7 @@ Local path as requirement:
 
 Pip's egg=pkgName requirement not in requirements file:
   installed:
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = ["git+https://github.com/monty/spam.git@master#egg=spam", "foo"]
@@ -125,7 +125,7 @@ Pip's egg=pkgName requirement not in requirements file:
 
 URL without egg fragment as requirement:
   installed:
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = ["git+https://github.com/pkg-dev/pkg.git@96dbe5e3", "foo"]
@@ -137,7 +137,7 @@ Build system dependencies in pyproject.toml with extras:
   installed:
     setuptools: 50
     wheel: 1
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = [
@@ -186,7 +186,7 @@ Build system dependencies in pyproject.toml without extras:
   installed:
     setuptools: 50
     wheel: 1
-    toml: 1
+    tomli: 1
   pyproject.toml: |
     [build-system]
     requires = [
@@ -389,7 +389,7 @@ Run dependencies with extras and build wheel option:
   result: 0
   stderr_contains: "Reading metadata from {wheeldir}/pytest-6.6.6-py3-none-any.whl"
 
-Tox dependencies:
+tox dependencies:
   installed:
     setuptools: 50
     wheel: 1
@@ -433,7 +433,7 @@ Tox dependencies:
       python3dist(inst)
   result: 0
 
-Tox extras:
+tox extras:
   installed:
     setuptools: 50
     wheel: 1
@@ -497,7 +497,7 @@ Tox extras:
       python3dist(extra-dep[extra_dep])
   result: 0
 
-Tox provision unsatisfied:
+tox provision unsatisfied:
   installed:
     setuptools: 50
     wheel: 1
@@ -542,7 +542,7 @@ Tox provision unsatisfied:
       python3dist(tox) >= 3.999
   result: 0
 
-Tox provision satisfied:
+tox provision satisfied:
   installed:
     setuptools: 50
     wheel: 1
@@ -654,7 +654,7 @@ With pyproject.toml, requirements file and with -N option:
   installed:
     setuptools: 50
     wheel: 1
-    toml: 1
+    tomli: 1
     lxml: 3.9
     ncclient: 1
     cryptography: 2
@@ -690,7 +690,7 @@ With pyproject.toml, requirements file and without -N option:
   installed:
     setuptools: 50
     wheel: 1
-    toml: 1
+    tomli: 1
     lxml: 3.9
     ncclient: 1
     cryptography: 2
@@ -801,7 +801,7 @@ Pre-releases are accepted:
   installed:
     setuptools: 50
     wheel: 1
-    toml: 1
+    tomli: 1
     cffi: 1.15.0rc2
   pyproject.toml: |
     [build-system]
@@ -820,7 +820,7 @@ Pre-releases are accepted:
   result: 0
 
 
-Wrapped subprocess prints to stdout from setup.py:
+Stdout from wrapped subprocess does not appear in output:
   installed:
     setuptools: 50
     wheel: 1
@@ -834,5 +834,192 @@ Wrapped subprocess prints to stdout from setup.py:
     python3dist(setuptools) >= 40.8
     python3dist(wheel)
     python3dist(wheel)
-  stderr_contains: "HOOK STDOUT: LEAK?"
+  result: 0
+
+pyproject.toml with runtime dependencies:
+  skipif: not SETUPTOOLS_60
+  installed:
+    setuptools: 50
+    wheel: 1
+    tomli: 1
+  pyproject.toml: |
+    [build-system]
+    requires = ["setuptools"]
+    build-backend = "setuptools.build_meta"
+    [project]
+    name = "my_package"
+    version = "0.1"
+    dependencies = [
+        "foo",
+        'importlib-metadata; python_version<"3.8"',
+    ]
+  expected: |
+    python3dist(setuptools)
+    python3dist(wheel)
+    python3dist(foo)
+  result: 0
+
+pyproject.toml with runtime dependencies and partially selected extras:
+  skipif: not SETUPTOOLS_60
+  installed:
+    setuptools: 50
+    wheel: 1
+    tomli: 1
+  extras:
+    - tests
+  pyproject.toml: |
+    [build-system]
+    requires = ["setuptools"]
+    build-backend = "setuptools.build_meta"
+    [project]
+    name = "my_package"
+    version = "0.1"
+    dependencies = [
+        "foo",
+        'importlib-metadata; python_version<"3.8"',
+    ]
+    [project.optional-dependencies]
+    tests = ["pytest>=5", "pytest-mock"]
+    docs = ["sphinx", "python-docs-theme"]
+  expected: |
+    python3dist(setuptools)
+    python3dist(wheel)
+    python3dist(foo)
+    python3dist(pytest) >= 5
+    python3dist(pytest-mock)
+  result: 0
+
+Self-referencing extras (sooner):
+  installed:
+    setuptools: 50
+    wheel: 1
+    tomli: 1
+  extras:
+    - dev  # this is deliberately sooner in the alphabet than the referenced ones
+  pyproject.toml: |
+    [build-system]
+    requires = ["setuptools"]
+    build-backend = "setuptools.build_meta"
+  setup.cfg: |
+    [metadata]
+    name = my_package
+    version = 0.1
+    [options]
+    install_requires =
+        foo
+        importlib-metadata; python_version<"3.8"
+    [options.extras_require]
+    tests = pytest>=5; pytest-mock
+    docs = sphinx; python-docs-theme
+    dev = my_package[docs,tests]
+  expected: |
+    python3dist(setuptools)
+    python3dist(wheel)
+    python3dist(foo)
+    python3dist(sphinx)
+    python3dist(python-docs-theme)
+    python3dist(pytest) >= 5
+    python3dist(pytest-mock)
+  result: 0
+
+Self-referencing extras (later):
+  installed:
+    setuptools: 50
+    wheel: 1
+    tomli: 1
+  extras:
+    - xdev  # this is deliberately later in the alphabet than the referenced ones
+  pyproject.toml: |
+    [build-system]
+    requires = ["setuptools"]
+    build-backend = "setuptools.build_meta"
+  setup.cfg: |
+    [metadata]
+    name = my_package
+    version = 0.1
+    [options]
+    install_requires =
+        foo
+        importlib-metadata; python_version<"3.8"
+    [options.extras_require]
+    tests = pytest>=5; pytest-mock
+    docs = sphinx; python-docs-theme
+    xdev = my_package[docs,tests]
+  expected: |
+    python3dist(setuptools)
+    python3dist(wheel)
+    python3dist(foo)
+    python3dist(sphinx)
+    python3dist(python-docs-theme)
+    python3dist(pytest) >= 5
+    python3dist(pytest-mock)
+  result: 0
+
+Self-referencing extras (maze):
+  installed:
+    setuptools: 50
+    wheel: 1
+    tomli: 1
+  extras:
+    - start
+  pyproject.toml: |
+    [build-system]
+    requires = ["setuptools"]
+    build-backend = "setuptools.build_meta"
+  setup.cfg: |
+    [metadata]
+    name = my_package
+    version = 0.1
+    [options.extras_require]
+    start = my_package[left,right]; startdep
+    left = my_package[right,forward]; leftdep
+    right = my_package[left,forward]; rightdep
+    forward = my_package[backward]; forwarddep
+    backward = my_package[left,right]; backwarddep
+    never = my_package[forward]; neverdep
+  expected: |
+    python3dist(setuptools)
+    python3dist(wheel)
+    python3dist(backwarddep)
+    python3dist(forwarddep)
+    python3dist(leftdep)
+    python3dist(rightdep)
+    python3dist(startdep)
+  result: 0
+
+config_settings_control:
+  include_runtime: false
+  config_settings:
+  pyproject.toml: |
+    [build-system]
+    build-backend = "test_backend"
+    backend-path = ["."]
+  test_backend.py: |
+    def get_requires_for_build_wheel(config_settings=None):
+        if not (config_settings is None or isinstance(config_settings, dict)):
+            raise TypeError
+        if config_settings and "test-config-setting" in config_settings:
+            return ["test-config-setting"]
+        return ["test-no-config-setting"]
+  expected: |
+    python3dist(test-no-config-setting)
+  result: 0
+
+config_settings:
+  include_runtime: false
+  config_settings:
+    test-config-setting: ""
+  pyproject.toml: |
+    [build-system]
+    build-backend = "test_backend"
+    backend-path = ["."]
+  test_backend.py: |
+    def get_requires_for_build_wheel(config_settings=None):
+        if not (config_settings is None or isinstance(config_settings, dict)):
+            raise TypeError
+        if config_settings and "test-config-setting" in config_settings:
+            return ["test-config-setting"]
+        return ["test-no-config-setting"]
+  expected: |
+    python3dist(test-config-setting)
   result: 0

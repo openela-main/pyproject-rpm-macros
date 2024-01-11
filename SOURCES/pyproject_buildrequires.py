@@ -4,9 +4,7 @@ import os
 import sys
 import importlib.metadata
 import argparse
-import tempfile
 import traceback
-import contextlib
 import json
 import subprocess
 import re
@@ -16,6 +14,7 @@ import pathlib
 import zipfile
 
 from pyproject_requirements_txt import convert_requirements_txt
+from pyproject_wheel import parse_config_settings_args
 
 
 # Some valid Python version specifiers are not supported.
@@ -46,39 +45,6 @@ except ImportError as e:
 from pyproject_convert import convert
 
 
-@contextlib.contextmanager
-def hook_call():
-    """Context manager that records all stdout content (on FD level)
-    and prints it to stderr at the end, with a 'HOOK STDOUT: ' prefix."""
-    tmpfile = io.TextIOWrapper(
-        tempfile.TemporaryFile(buffering=0),
-        encoding='utf-8',
-        errors='replace',
-        write_through=True,
-    )
-
-    stdout_fd = 1
-    stdout_fd_dup = os.dup(stdout_fd)
-    stdout_orig = sys.stdout
-
-    # begin capture
-    sys.stdout = tmpfile
-    os.dup2(tmpfile.fileno(), stdout_fd)
-
-    try:
-        yield
-    finally:
-        # end capture
-        sys.stdout = stdout_orig
-        os.dup2(stdout_fd_dup, stdout_fd)
-
-        tmpfile.seek(0)  # rewind
-        for line in tmpfile:
-            print_err('HOOK STDOUT:', line, end='')
-
-        tmpfile.close()
-
-
 def guess_reason_for_invalid_requirement(requirement_str):
     if ':' in requirement_str:
         message = (
@@ -100,10 +66,11 @@ def guess_reason_for_invalid_requirement(requirement_str):
 
 
 class Requirements:
-    """Requirement printer"""
+    """Requirement gatherer. The macro will eventually print out output_lines."""
     def __init__(self, get_installed_version, extras=None,
-                 generate_extras=False, python3_pkgversion='3'):
+                 generate_extras=False, python3_pkgversion='3', config_settings=None):
         self.get_installed_version = get_installed_version
+        self.output_lines = []
         self.extras = set()
 
         if extras:
@@ -111,9 +78,11 @@ class Requirements:
                 self.add_extras(*extra.split(','))
 
         self.missing_requirements = False
+        self.ignored_alien_requirements = []
 
         self.generate_extras = generate_extras
         self.python3_pkgversion = python3_pkgversion
+        self.config_settings = config_settings
 
     def add_extras(self, *extras):
         self.extras |= set(e.strip() for e in extras)
@@ -130,7 +99,7 @@ class Requirements:
                 return True
         return False
 
-    def add(self, requirement_str, *, source=None):
+    def add(self, requirement_str, *, package_name=None, source=None):
         """Output a Python-style requirement string as RPM dep"""
         print_err(f'Handling {requirement_str} from {source}')
 
@@ -152,6 +121,21 @@ class Requirements:
         if (requirement.marker is not None and
                 not self.evaluate_all_environments(requirement)):
             print_err(f'Ignoring alien requirement:', requirement_str)
+            self.ignored_alien_requirements.append(requirement_str)
+            return
+
+        # Handle self-referencing requirements
+        if package_name and canonicalize_name(package_name) == name:
+            # Self-referential extras need to be handled specially
+            if requirement.extras:
+                if not (requirement.extras <= self.extras):  # only handle it if needed
+                    # let all further requirements know we want those extras
+                    self.add_extras(*requirement.extras)
+                    # re-add all of the alien requirements ignored in the past
+                    # they might no longer be alien now
+                    self.readd_ignored_alien_requirements(package_name=package_name)
+            else:
+                print_err(f'Ignoring self-referential requirement without extras:', requirement_str)
             return
 
         # We need to always accept pre-releases as satisfying the requirement
@@ -192,12 +176,12 @@ class Requirements:
                 together.append(convert(python3dist(name, python3_pkgversion=self.python3_pkgversion),
                                         specifier.operator, specifier.version))
             if len(together) == 0:
-                print(python3dist(name,
-                                  python3_pkgversion=self.python3_pkgversion))
+                dep = python3dist(name, python3_pkgversion=self.python3_pkgversion)
+                self.output_lines.append(dep)
             elif len(together) == 1:
-                print(together[0])
+                self.output_lines.append(together[0])
             else:
-                print(f"({' with '.join(together)})")
+                self.output_lines.append(f"({' with '.join(together)})")
 
     def check(self, *, source=None):
         """End current pass if any unsatisfied dependencies were output"""
@@ -210,23 +194,25 @@ class Requirements:
         for req_str in requirement_strs:
             self.add(req_str, **kwargs)
 
+    def readd_ignored_alien_requirements(self, **kwargs):
+        """add() previously ignored alien requirements again."""
+        requirements, self.ignored_alien_requirements = self.ignored_alien_requirements, []
+        kwargs.setdefault('source', 'Previously ignored alien requirements')
+        self.extend(requirements, **kwargs)
+
 
 def toml_load(opened_binary_file):
     try:
         # tomllib is in the standard library since 3.11.0b1
-        import tomllib as toml_module
-        load_from = opened_binary_file
+        import tomllib
     except ImportError:
         try:
-            # note: we could use tomli here,
-            # but for backwards compatibility with RHEL 9, we use toml instead
-            import toml as toml_module
-            load_from = io.TextIOWrapper(opened_binary_file, encoding='utf-8')
+            import tomli as tomllib
         except ImportError as e:
             print_err('Import error:', e)
             # already echoed by the %pyproject_buildrequires macro
             sys.exit(0)
-    return toml_module.load(load_from)
+    return tomllib.load(opened_binary_file)
 
 
 def get_backend(requirements):
@@ -285,15 +271,28 @@ def get_backend(requirements):
 def generate_build_requirements(backend, requirements):
     get_requires = getattr(backend, 'get_requires_for_build_wheel', None)
     if get_requires:
-        with hook_call():
-            new_reqs = get_requires()
+        new_reqs = get_requires(config_settings=requirements.config_settings)
         requirements.extend(new_reqs, source='get_requires_for_build_wheel')
         requirements.check(source='get_requires_for_build_wheel')
 
 
-def requires_from_metadata_file(metadata_file):
-    message = email.parser.Parser().parse(metadata_file, headersonly=True)
+def parse_metadata_file(metadata_file):
+    return email.parser.Parser().parse(metadata_file, headersonly=True)
+
+
+def requires_from_parsed_metadata_file(message):
     return {k: message.get_all(k, ()) for k in ('Requires', 'Requires-Dist')}
+
+
+def package_name_from_parsed_metadata_file(message):
+    return message.get('name')
+
+
+def package_name_and_requires_from_metadata_file(metadata_file):
+    message = parse_metadata_file(metadata_file)
+    package_name = package_name_from_parsed_metadata_file(message)
+    requires = requires_from_parsed_metadata_file(message)
+    return package_name, requires
 
 
 def generate_run_requirements_hook(backend, requirements):
@@ -306,11 +305,13 @@ def generate_run_requirements_hook(backend, requirements):
             'Use the provisional -w flag to build the wheel and parse the metadata from it, '
             'or use the -R flag not to generate runtime dependencies.'
         )
-    with hook_call():
-        dir_basename = prepare_metadata('.')
+    dir_basename = prepare_metadata('.', config_settings=requirements.config_settings)
     with open(dir_basename + '/METADATA') as metadata_file:
-        for key, requires in requires_from_metadata_file(metadata_file).items():
-            requirements.extend(requires, source=f'hook generated metadata: {key}')
+        name, requires = package_name_and_requires_from_metadata_file(metadata_file)
+        for key, req in requires.items():
+            requirements.extend(req,
+                                package_name=name,
+                                source=f'hook generated metadata: {key} ({name})')
 
 
 def find_built_wheel(wheeldir):
@@ -328,7 +329,11 @@ def generate_run_requirements_wheel(backend, requirements, wheeldir):
     wheel = find_built_wheel(wheeldir)
     if not wheel:
         import pyproject_wheel
-        returncode = pyproject_wheel.build_wheel(wheeldir=wheeldir, stdout=sys.stderr)
+        returncode = pyproject_wheel.build_wheel(
+            wheeldir=wheeldir,
+            stdout=sys.stderr,
+            config_settings=requirements.config_settings,
+        )
         if returncode != 0:
             raise RuntimeError('Failed to build the wheel for %pyproject_buildrequires -w.')
         wheel = find_built_wheel(wheeldir)
@@ -340,8 +345,11 @@ def generate_run_requirements_wheel(backend, requirements, wheeldir):
         for name in wheelfile.namelist():
             if name.count('/') == 1 and name.endswith('.dist-info/METADATA'):
                 with io.TextIOWrapper(wheelfile.open(name), encoding='utf-8') as metadata_file:
-                    for key, requires in requires_from_metadata_file(metadata_file).items():
-                        requirements.extend(requires, source=f'built wheel metadata: {key}')
+                    name, requires = package_name_and_requires_from_metadata_file(metadata_file)
+                    for key, req in requires.items():
+                        requirements.extend(req,
+                                            package_name=name,
+                                            source=f'built wheel metadata: {key} ({name})')
                 break
         else:
             raise RuntimeError('Could not find *.dist-info/METADATA in built wheel.')
@@ -412,16 +420,20 @@ def python3dist(name, op=None, version=None, python3_pkgversion="3"):
 def generate_requires(
     *, include_runtime=False, build_wheel=False, wheeldir=None, toxenv=None, extras=None,
     get_installed_version=importlib.metadata.version,  # for dep injection
-    generate_extras=False, python3_pkgversion="3", requirement_files=None, use_build_system=True
+    generate_extras=False, python3_pkgversion="3", requirement_files=None, use_build_system=True,
+    output, config_settings=None,
 ):
     """Generate the BuildRequires for the project in the current directory
+
+    The generated BuildRequires are written to the provided output.
 
     This is the main Python entry point.
     """
     requirements = Requirements(
         get_installed_version, extras=extras or [],
         generate_extras=generate_extras,
-        python3_pkgversion=python3_pkgversion
+        python3_pkgversion=python3_pkgversion,
+        config_settings=config_settings,
     )
 
     try:
@@ -444,6 +456,8 @@ def generate_requires(
             generate_run_requirements(backend, requirements, build_wheel=build_wheel, wheeldir=wheeldir)
     except EndPass:
         return
+    finally:
+        output.write_text(os.linesep.join(requirements.output_lines) + os.linesep)
 
 
 def main(argv):
@@ -468,6 +482,9 @@ def main(argv):
     parser.add_argument(
         '-p', '--python3_pkgversion', metavar='PYTHON3_PKGVERSION',
         default="3", help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--output', type=pathlib.Path, required=True, help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--wheeldir', metavar='PATH', default=None,
@@ -506,6 +523,12 @@ def main(argv):
         metavar='REQUIREMENTS.TXT',
         help=('Add buildrequires from file'),
     )
+    parser.add_argument(
+        '-C',
+        dest='config_settings',
+        action='append',
+        help='Configuration settings to pass to the PEP 517 backend',
+    )
 
     args = parser.parse_args(argv)
 
@@ -539,6 +562,8 @@ def main(argv):
             python3_pkgversion=args.python3_pkgversion,
             requirement_files=args.requirement_files,
             use_build_system=args.use_build_system,
+            output=args.output,
+            config_settings=parse_config_settings_args(args.config_settings),
         )
     except Exception:
         # Log the traceback explicitly (it's useful debug info)

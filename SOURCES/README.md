@@ -163,6 +163,43 @@ The `%pyproject_buildrequires` macro also accepts the `-r` flag for backward com
 it means "include runtime dependencies" which has been the default since version 0-53.
 
 
+Passing config settings to build backends
+-----------------------------------------
+
+The `%pyproject_buildrequires` and `%pyproject_wheel` macros accept a `-C` flag
+to pass [configuration settings][config_settings] to the build backend.
+Options take the form of `-C KEY`, `-C KEY=VALUE`, or `-C--option-with-dashes`.
+Pass `-C` multiple times to specify multiple options.
+This option is equivalent to pip's `--config-settings` flag.
+These are passed on to PEP 517 hooks' `config_settings` argument as a Python
+dictionary.
+
+The `%pyproject_buildrequires` macro passes these options to the
+`get_requires_for_build_wheel` and `prepare_metadata_for_build_wheel` hooks.
+Passing `-C` to `%pyproject_buildrequires` is incompatible with `-N` which does
+not call these hooks at all.
+
+The `%pyproject_wheel` macro passes these options to the `build_wheel` hook.
+
+Consult the project's upstream documentation and/or the corresponding build
+backend's documentation for more information.
+Note that some projects don't use config settings at all
+and other projects may only accept config settings for one of the two steps.
+
+Note that the current implementation of the macros uses `pip` to build wheels.
+On some systems (notably on RHEL 9 with Python 3.9),
+`pip` is too old to understand `--config-settings`.
+Using the `-C` option for `%pyproject_wheel` (or `%pyproject_buildrequires -w`)
+is not supported there and will result to an error like:
+
+    Usage:   
+      /usr/bin/python3 -m pip wheel [options] <requirement specifier> ...
+      ...
+    no such option: --config-settings
+
+[config_settings]: https://peps.python.org/pep-0517/#config-settings
+
+
 Running tox based tests
 -----------------------
 
@@ -336,91 +373,6 @@ These arguments are still required:
   Multiple subpackages are generated when multiple names are provided.
 
 
-PROVISIONAL: Importing just-built (extension) modules in %build
----------------------------------------------------------------
-
-Sometimes, it is desired to be able to import the *just-built* extension modules
-in the `%build` section, e.g. to build the documentation with Sphinx.
-
-    %build
-    %pyproject_wheel
-    ... build the docs here ...
-
-With pure Python packages, it might be possible to set `PYTHONPATH=${PWD}` or `PYTHONPATH=${PWD}/src`.
-However, it is a bit more complicated with extension modules.
-
-The location of just-built modules might differ depending on Python version, architecture, pip version, etc.
-Hence, the macro `%{pyproject_build_lib}` exists to be used like this:
-
-    %build
-    %pyproject_wheel
-    PYTHONPATH=%{pyproject_build_lib} ... build the docs here ...
-
-This macro is currently **provisional** and the behavior might change.
-Please subscribe to Fedora's [python-devel list] if you use the macro.
-
-The `%{pyproject_build_lib}` macro expands to an Shell `$(...)` expression and does not work when put into single quotes (`'`).
-
-Depending on the pip version, the expanded value will differ:
-
-[python-devel list]: https://lists.fedoraproject.org/archives/list/python-devel@lists.fedoraproject.org/
-
-### New pip 21.3+ with in-tree-build and setuptools 62.1+ (Fedora 37+)
-
-Always use the macro from the same directory where you called `%pyproject_wheel` from.
-The value will expand to something like:
-
-* `/builddir/build/BUILD/%{name}-%{version}/build/lib.linux-x86_64-cpython-311` for wheels with extension modules
-* `/builddir/build/BUILD/%{name}-%{version}/build/lib` for pure Python wheels
-
-If multiple wheels were built from the same directory,
-some pure Python and some with extension modules,
-the expanded value will be combined with `:`:
-
-* `/builddir/build/BUILD/%{name}-%{version}/build/lib.linux-x86_64-cypthon-311:/builddir/build/BUILD/%{name}-%{version}/build/lib`
-
-If multiple wheels were built from different directories,
-the value will differ depending on the current directory.
-
-
-### New pip 21.3+ with in-tree-build and older setuptools (Fedora 36)
-
-Always use the macro from the same directory where you called `%pyproject_wheel` from.
-The value will expand to something like:
-
-* `/builddir/build/BUILD/%{name}-%{version}/build/lib.linux-x86_64-3.10` for wheels with extension modules
-* `/builddir/build/BUILD/%{name}-%{version}/build/lib` for pure Python wheels
-
-If multiple wheels were built from the same directory,
-some pure Python and some with extension modules,
-the expanded value will be combined with `:`:
-
-* `/builddir/build/BUILD/%{name}-%{version}/build/lib.linux-x86_64-3.10:/builddir/build/BUILD/%{name}-%{version}/build/lib`
-
-If multiple wheels were built from different directories,
-the value will differ depending on the current directory.
-
-
-### Older pip with out-of-tree-build (Fedora 35 and EL 9)
-
-The value will expand to something like:
-
-* `/builddir/build/BUILD/%{name}-%{version}/.pyproject-builddir/pip-req-build-xxxxxxxx/build/lib.linux-x86_64-3.10` for wheels with extension modules
-* `/builddir/build/BUILD/%{name}-%{version}/.pyproject-builddir/pip-req-build-xxxxxxxx/build/lib` for pure Python wheels
-
-Note that the exact value is **not stable** between builds
-(the `xxxxxxxx` part is randomly generated,
-neither you should consider the `.pyproject-builddir` directory to remain stable).
-
-If multiple wheels are built,
-the expanded value will always be combined with `:` regardless of the current directory, e.g.:
-
-* `/builddir/build/BUILD/%{name}-%{version}/.pyproject-builddir/pip-req-build-xxxxxxxx/build/lib.linux-x86_64-3.10:/builddir/build/BUILD/%{name}-%{version}/.pyproject-builddir/pip-req-build-yyyyyyyy/build/lib.linux-x86_64-3.10:/builddir/build/BUILD/%{name}-%{version}/.pyproject-builddir/pip-req-build-zzzzzzzz/build/lib`
-
-**Note:** If you manage to build some wheels with in-tree-build and some with out-of-tree-build option,
-the expanded value will contain all relevant directories.
-
-
 Limitations
 -----------
 
@@ -471,6 +423,12 @@ so be prepared for problems.
 [PEP 518]: https://www.python.org/dev/peps/pep-0518/
 [PEP 639]: https://www.python.org/dev/peps/pep-0639/
 [pip's documentation]: https://pip.pypa.io/en/stable/cli/pip_install/#vcs-support
+
+
+Deprecated
+----------
+
+The `%{pyproject_build_lib}` macro is deprecated, don't use it.
 
 
 Testing the macros

@@ -19,21 +19,29 @@
 %_pyproject_modules %{_builddir}/%{_pyproject_files_prefix}-pyproject-modules
 %_pyproject_ghost_distinfo %{_builddir}/%{_pyproject_files_prefix}-pyproject-ghost-distinfo
 %_pyproject_record %{_builddir}/%{_pyproject_files_prefix}-pyproject-record
+%_pyproject_buildrequires %{_builddir}/%{_pyproject_files_prefix}-pyproject-buildrequires
 
 # Avoid leaking %%{_pyproject_builddir} to pytest collection
 # https://bugzilla.redhat.com/show_bug.cgi?id=1935212
 # The value is read and used by the %%pytest and %%tox macros:
 %_set_pytest_addopts %global __pytest_addopts --ignore=%{_pyproject_builddir}
 
-%pyproject_wheel() %{expand:\\\
+%pyproject_wheel(C:) %{expand:\\\
 %_set_pytest_addopts
 mkdir -p "%{_pyproject_builddir}"
 CFLAGS="${CFLAGS:-${RPM_OPT_FLAGS}}" LDFLAGS="${LDFLAGS:-${RPM_LD_FLAGS}}" TMPDIR="%{_pyproject_builddir}" \\\
-%{__python3} -Bs %{_rpmconfigdir}/redhat/pyproject_wheel.py %{_pyproject_wheeldir}
+%{__python3} -Bs %{_rpmconfigdir}/redhat/pyproject_wheel.py %{?**} %{_pyproject_wheeldir}
 }
 
 
-%pyproject_build_lib %{expand:\\\
+%pyproject_build_lib %{!?__pyproject_build_lib_warned:%{warn:The %%{pyproject_build_lib} macro is deprecated.
+It only works with setuptools and is not build-backend-agnostic.
+The macro is not scheduled for removal, but there is a possibility of incompatibilities with future versions of setuptools.
+As a replacement for the macro for the setuptools backend on Fedora 37+, you can use $PWD/build/lib for pure Python packages,
+or $PWD/build/lib.%%{python3_platform}-cpython-%%{python3_version_nodots} for packages with extension modules.
+Other build backends and older distributions may need different paths.
+See https://lists.fedoraproject.org/archives/list/python-devel@lists.fedoraproject.org/thread/HMLOPAU3RZLXD4BOJHTIPKI3I4U6U7OE/ for details.
+}%global __pyproject_build_lib_warned 1}%{expand:\\\
 $(
 pyproject_build_lib=()
 if [ -d build/lib.%{python3_platform}-cpython-%{python3_version_nodots} ]; then
@@ -96,7 +104,14 @@ fi
 %pyproject_extras_subpkg(n:i:f:F) %{expand:%{?python_extras_subpkg:%{python_extras_subpkg%{?!-i:%{?!-f:%{?!-F: -f %{_pyproject_ghost_distinfo}}}} %**}}}
 
 
+# Escaping an actual percentage sign in path by 8 signs has been verified in RPM 4.16 and 4.17.
+# See this thread http://lists.rpm.org/pipermail/rpm-list/2021-June/002048.html
+# Since RPM 4.19, 2 signs are needed instead.
+# On the CI, we build tests/escape_percentages.spec to verify the assumptions.
+# We should check RPM version here instead of Fedora/RHEL, but it's hard;
+# see https://github.com/rpm-software-management/rpm/issues/2523
 %pyproject_save_files() %{expand:\\\
+%{expr:0%{?fedora} >= 39 || 0%{?rhel} >= 10 ? "RPM_PERCENTAGES_COUNT=2" : "RPM_PERCENTAGES_COUNT=8" } \\
 %{__python3} %{_rpmconfigdir}/redhat/pyproject_save_files.py \\
   --output-files "%{pyproject_files}" \\
   --output-modules "%{_pyproject_modules}" \\
@@ -125,7 +140,7 @@ fi
 
 
 # Note: Keep the options in sync with this macro from macros.aaa-pyproject-srpm
-%pyproject_buildrequires(rRxtNwe:) %{expand:\\\
+%pyproject_buildrequires(rRxtNwe:C:) %{expand:\\\
 %_set_pytest_addopts
 # The _auto_set_build_flags feature does not do this in %%generate_buildrequires section,
 # but we want to get an environment consistent with %%build:
@@ -143,6 +158,7 @@ fi
 %{-e:%{error:The -N and -e options are mutually exclusive}}
 %{-t:%{error:The -N and -t options are mutually exclusive}}
 %{-w:%{error:The -N and -w options are mutually exclusive}}
+%{-C:%{error:The -N and -C options are mutually exclusive}}
 }
 %{-e:%{expand:%global toxenv %(%{__python3} -s %{_rpmconfigdir}/redhat/pyproject_construct_toxenv.py %{?**})}}
 echo 'pyproject-rpm-macros'  # first stdout line matches the implementation in macros.aaa-pyproject-srpm
@@ -151,9 +167,9 @@ echo 'python%{python3_pkgversion}dist(pip) >= 19'
 echo 'python%{python3_pkgversion}dist(packaging)'
 %{!-N:if [ -f pyproject.toml ]; then
   %["%{python3_pkgversion}" == "3"
-    ? "echo '(python%{python3_pkgversion}dist(toml) if python%{python3_pkgversion}-devel < 3.11)'"
+    ? "echo '(python%{python3_pkgversion}dist(tomli) if python%{python3_pkgversion}-devel < 3.11)'"
     : "%[v"%{python3_pkgversion}" < v"3.11"
-       ? "echo 'python%{python3_pkgversion}dist(toml)'"
+       ? "echo 'python%{python3_pkgversion}dist(tomli)'"
        : "true # will use tomllib, echo nothing"
     ]"
   ]
@@ -169,9 +185,13 @@ fi}
 rm -rfv *.dist-info/ >&2
 if [ -f %{__python3} ]; then
   mkdir -p "%{_pyproject_builddir}"
+  echo -n > %{_pyproject_buildrequires}
   CFLAGS="${CFLAGS:-${RPM_OPT_FLAGS}}" LDFLAGS="${LDFLAGS:-${RPM_LD_FLAGS}}" TMPDIR="%{_pyproject_builddir}" \\\
-  RPM_TOXENV="%{toxenv}" HOSTNAME="rpmbuild" %{__python3} -Bs %{_rpmconfigdir}/redhat/pyproject_buildrequires.py %{?!_python_no_extras_requires:--generate-extras} --python3_pkgversion %{python3_pkgversion} --wheeldir %{_pyproject_wheeldir} %{?**}
+  RPM_TOXENV="%{toxenv}" HOSTNAME="rpmbuild" %{__python3} -Bs %{_rpmconfigdir}/redhat/pyproject_buildrequires.py %{?!_python_no_extras_requires:--generate-extras} --python3_pkgversion %{python3_pkgversion} --wheeldir %{_pyproject_wheeldir} --output %{_pyproject_buildrequires} %{?**} >&2
+  cat %{_pyproject_buildrequires}
 fi
+# Incomplete .dist-info dir might confuse importlib.metadata
+rm -rfv *.dist-info/ >&2
 }
 
 
