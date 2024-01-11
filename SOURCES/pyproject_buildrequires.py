@@ -4,9 +4,9 @@ import os
 import sys
 import importlib.metadata
 import argparse
+import tempfile
 import traceback
 import contextlib
-from io import StringIO
 import json
 import subprocess
 import re
@@ -48,11 +48,35 @@ from pyproject_convert import convert
 
 @contextlib.contextmanager
 def hook_call():
-    captured_out = StringIO()
-    with contextlib.redirect_stdout(captured_out):
+    """Context manager that records all stdout content (on FD level)
+    and prints it to stderr at the end, with a 'HOOK STDOUT: ' prefix."""
+    tmpfile = io.TextIOWrapper(
+        tempfile.TemporaryFile(buffering=0),
+        encoding='utf-8',
+        errors='replace',
+        write_through=True,
+    )
+
+    stdout_fd = 1
+    stdout_fd_dup = os.dup(stdout_fd)
+    stdout_orig = sys.stdout
+
+    # begin capture
+    sys.stdout = tmpfile
+    os.dup2(tmpfile.fileno(), stdout_fd)
+
+    try:
         yield
-    for line in captured_out.getvalue().splitlines():
-        print_err('HOOK STDOUT:', line)
+    finally:
+        # end capture
+        sys.stdout = stdout_orig
+        os.dup2(stdout_fd_dup, stdout_fd)
+
+        tmpfile.seek(0)  # rewind
+        for line in tmpfile:
+            print_err('HOOK STDOUT:', line, end='')
+
+        tmpfile.close()
 
 
 def guess_reason_for_invalid_requirement(requirement_str):
@@ -100,7 +124,7 @@ class Requirements:
             return [{'extra': e} for e in sorted(self.extras)]
         return [{'extra': ''}]
 
-    def evaluate_all_environamnets(self, requirement):
+    def evaluate_all_environments(self, requirement):
         for marker_env in self.marker_envs:
             if requirement.marker.evaluate(environment=marker_env):
                 return True
@@ -126,7 +150,7 @@ class Requirements:
 
         name = canonicalize_name(requirement.name)
         if (requirement.marker is not None and
-                not self.evaluate_all_environamnets(requirement)):
+                not self.evaluate_all_environments(requirement)):
             print_err(f'Ignoring alien requirement:', requirement_str)
             return
 
@@ -424,34 +448,30 @@ def generate_requires(
 
 def main(argv):
     parser = argparse.ArgumentParser(
-        description='Generate BuildRequires for a Python project.'
+        description='Generate BuildRequires for a Python project.',
+        prog='%pyproject_buildrequires',
+        add_help=False,
+    )
+    parser.add_argument(
+        '--help', action='help',
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '-r', '--runtime', action='store_true', default=True,
-        help='Generate run-time requirements (default, disable with -R)',
+        help=argparse.SUPPRESS,  # Generate run-time requirements (backwards-compatibility only)
     )
     parser.add_argument(
-        '-w', '--wheel', action='store_true', default=False,
-        help=('Generate run-time requirements by building the wheel '
-              '(useful for build backends without the prepare_metadata_for_build_wheel hook)'),
+        '--generate-extras', action='store_true',
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '-p', '--python3_pkgversion', metavar='PYTHON3_PKGVERSION',
+        default="3", help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--wheeldir', metavar='PATH', default=None,
-        help='The directory with wheel, used when -w.',
-    )
-    parser.add_argument(
-        '-R', '--no-runtime', action='store_false', dest='runtime',
-        help="Don't generate run-time requirements (implied by -N)",
-    )
-    parser.add_argument(
-        '-e', '--toxenv', metavar='TOXENVS', action='append',
-        help=('specify tox environments (comma separated and/or repeated)'
-              '(implies --tox)'),
-    )
-    parser.add_argument(
-        '-t', '--tox', action='store_true',
-        help=('generate test tequirements from tox environment '
-              '(implies --runtime)'),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '-x', '--extras', metavar='EXTRAS', action='append',
@@ -459,20 +479,31 @@ def main(argv):
              '(e.g. -x testing,feature-x) (implies --runtime, can be repeated)',
     )
     parser.add_argument(
-        '--generate-extras', action='store_true',
-        help='Generate build requirements on Python Extras',
+        '-t', '--tox', action='store_true',
+        help=('generate test tequirements from tox environment '
+              '(implies --runtime)'),
     )
     parser.add_argument(
-        '-p', '--python3_pkgversion', metavar='PYTHON3_PKGVERSION',
-        default="3", help=('Python version for pythonXdist()'
-                           'or pythonX.Ydist() requirements'),
+        '-e', '--toxenv', metavar='TOXENVS', action='append',
+        help=('specify tox environments (comma separated and/or repeated)'
+              '(implies --tox)'),
+    )
+    parser.add_argument(
+        '-w', '--wheel', action='store_true', default=False,
+        help=('Generate run-time requirements by building the wheel '
+              '(useful for build backends without the prepare_metadata_for_build_wheel hook)'),
+    )
+    parser.add_argument(
+        '-R', '--no-runtime', action='store_false', dest='runtime',
+        help="Don't generate run-time requirements (implied by -N)",
     )
     parser.add_argument(
         '-N', '--no-use-build-system', dest='use_build_system',
         action='store_false', help='Use -N to indicate that project does not use any build system',
     )
     parser.add_argument(
-       'requirement_files', nargs='*', type=argparse.FileType('r'),
+        'requirement_files', nargs='*', type=argparse.FileType('r'),
+        metavar='REQUIREMENTS.TXT',
         help=('Add buildrequires from file'),
     )
 

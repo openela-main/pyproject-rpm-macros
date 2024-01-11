@@ -140,7 +140,7 @@ such plugins will be BuildRequired as well.
 Not all plugins are guaranteed to play well with [tox-current-env],
 in worst case, patch/sed the requirement out from the tox configuration.
 
-Note that both `-x` and `-t` imply `-r`,
+Note that neither `-x` or `-t` can be used with `-R`,
 because runtime dependencies are always required for testing.
 You can only use those options if the build backend  supports the [prepare-metadata-for-build-wheel hook],
 or together with `-w`.
@@ -152,12 +152,16 @@ or together with `-w`.
 Additionally to generated requirements you can supply multiple file names to `%pyproject_buildrequires` macro.
 Dependencies will be loaded from them:
 
-    %pyproject_buildrequires -r requirements/tests.in requirements/docs.in requirements/dev.in
+    %pyproject_buildrequires requirements/tests.in requirements/docs.in requirements/dev.in
 
 For packages not using build system you can use `-N` to entirely skip automatical
 generation of requirements and install requirements only from manually specified files.
-`-N` option cannot be used in combination with other options mentioned above
-(`-r`, `-w`, `-e`, `-t`, `-x`).
+`-N` option implies `-R` and cannot be used in combination with other options mentioned above
+(`-w`, `-e`, `-t`, `-x`).
+
+The `%pyproject_buildrequires` macro also accepts the `-r` flag for backward compatibility;
+it means "include runtime dependencies" which has been the default since version 0-53.
+
 
 Running tox based tests
 -----------------------
@@ -171,8 +175,9 @@ Then, use the `%tox` macro in `%check`:
 
 The macro:
 
- - Always prepends `$PATH` with `%{buildroot}%{_bindir}`
- - If not defined, sets `$PYTHONPATH` to `%{buildroot}%{python3_sitearch}:%{buildroot}%{python3_sitelib}`
+ - Sets environment variables via `%{py3_test_envvars}`, namely:
+     - Always prepends `$PATH` with `%{buildroot}%{_bindir}`
+     - If not defined, sets `$PYTHONPATH` to `%{buildroot}%{python3_sitearch}:%{buildroot}%{python3_sitelib}`
  - If not defined, sets `$TOX_TESTENV_PASSENV` to `*`
  - Runs `tox` with `-q` (quiet), `--recreate` and `--current-env` (from [tox-current-env]) flags
  - Implicitly uses the tox environment name stored in `%{toxenv}` - as overridden by `%pyproject_buildrequires -e`
@@ -265,6 +270,7 @@ If `%pyproject_save_files` is not used, calling `%pyproject_check_import` will f
 When `%pyproject_save_files` is invoked,
 it creates a list of all valid and public (i.e. not starting with `_`)
 importable module names found in the package.
+Each top-level module name matches at least one of the globs provided as an argument to `%pyproject_save_files`.
 This list is then usable by `%pyproject_check_import` which performs an import check for each listed module.
 When a module fails to import, the build fails.
 

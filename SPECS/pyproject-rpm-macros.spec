@@ -12,11 +12,12 @@ License:        MIT
 #   Increment Y and reset Z when new macros or features are added
 #   Increment Z when this is a bugfix or a cosmetic change
 # Dropping support for EOL Fedoras is *not* considered a breaking change
-Version:        1.3.3
+Version:        1.6.2
 Release:        1%{?dist}
 
 # Macro files
 Source001:      macros.pyproject
+Source002:      macros.aaa-pyproject-srpm
 
 # Implementation files
 Source101:      pyproject_buildrequires.py
@@ -48,6 +49,7 @@ BuildArch:      noarch
 
 %if %{with tests}
 BuildRequires:  python3dist(pytest)
+BuildRequires:  python3dist(pytest-xdist)
 BuildRequires:  python3dist(pyyaml)
 BuildRequires:  python3dist(packaging)
 BuildRequires:  python3dist(pip)
@@ -64,6 +66,7 @@ BuildRequires:  python3-rpm-macros
 Requires:       python-rpm-macros
 Requires:       python-srpm-macros
 Requires:       python3-rpm-macros
+Requires:       (pyproject-srpm-macros = %{?epoch:%{epoch}:}%{version}-%{release} if pyproject-srpm-macros)
 
 # We use the following tools outside of coreutils
 Requires:       /usr/bin/find
@@ -84,6 +87,17 @@ These macros replace %%py3_build and %%py3_install,
 which only work with setup.py.
 
 
+%package -n pyproject-srpm-macros
+Summary:        Minimal implementation of %%pyproject_buildrequires
+Requires:       (pyproject-rpm-macros = %{?epoch:%{epoch}:}%{version}-%{release} if pyproject-rpm-macros)
+
+%description -n pyproject-srpm-macros
+This package contains a minimal implementation of %%pyproject_buildrequires.
+When used in %%generate_buildrequires, it will generate BuildRequires
+for pyproject-rpm-macros. When both packages are installed, the full version
+takes precedence.
+
+
 %prep
 # Not strictly necessary but allows working on file names instead
 # of source numbers in install section
@@ -97,6 +111,7 @@ cp -p %{sources} .
 mkdir -p %{buildroot}%{_rpmmacrodir}
 mkdir -p %{buildroot}%{_rpmconfigdir}/redhat
 install -pm 644 macros.pyproject %{buildroot}%{_rpmmacrodir}/
+install -pm 644 macros.aaa-pyproject-srpm %{buildroot}%{_rpmmacrodir}/
 install -pm 644 pyproject_buildrequires.py %{buildroot}%{_rpmconfigdir}/redhat/
 install -pm 644 pyproject_convert.py %{buildroot}%{_rpmconfigdir}/redhat/
 install -pm 644 pyproject_save_files.py  %{buildroot}%{_rpmconfigdir}/redhat/
@@ -108,7 +123,7 @@ install -pm 644 pyproject_wheel.py %{buildroot}%{_rpmconfigdir}/redhat/
 %if %{with tests}
 %check
 export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856356
-%pytest -vv --doctest-modules
+%pytest -vv --doctest-modules -n auto
 
 # brp-compress is provided as an argument to get the right directory macro expansion
 %{python3} compare_mandata.py -f %{_rpmconfigdir}/brp-compress
@@ -128,7 +143,35 @@ export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856
 %doc README.md
 %license LICENSE
 
+%files -n pyproject-srpm-macros
+%{_rpmmacrodir}/macros.aaa-pyproject-srpm
+%license LICENSE
+
+
 %changelog
+* Wed Feb 08 2023 Lumír Balhar <lbalhar@redhat.com> - 1.6.2-1
+- Improve detection of lang files
+
+* Fri Feb 03 2023 Miro Hrončok <mhroncok@redhat.com> - 1.6.1-1
+- %%pyproject_buildrequires: Avoid leaking stdout from subprocesses
+
+* Fri Jan 20 2023 Miro Hrončok <miro@hroncok.cz> - 1.6.0-1
+- Add pyproject-srpm-macros with a minimal %%pyproject_buildrequires macro
+
+* Fri Jan 13 2023 Miro Hrončok <mhroncok@redhat.com> - 1.5.1-1
+- Adjusts %%pyproject_buildrequires tests for tox 4
+
+* Mon Nov 28 2022 Miro Hrončok <mhroncok@redhat.com> - 1.5.0-1
+- Use %%py3_test_envvars in %%tox when available
+
+* Mon Sep 19 2022 Python Maint <python-maint@redhat.com> - 1.4.0-1
+- %%pyproject_save_files: Support License-Files installed into the *Root License Directory* from PEP 369
+- %%pyproject_check_import: Import only the modules whose top-level names
+  match any of the globs provided to %%pyproject_save_files
+
+* Tue Aug 30 2022 Otto Liljalaakso <otto.liljalaakso@iki.fi> - 1.3.4-1
+- Fix typo in internal function name
+
 * Tue Aug 09 2022 Karolina Surma <ksurma@redhat.com> - 1.3.3-1
 - Don't fail %%pyproject_save_files '*' if no modules are detected
 
