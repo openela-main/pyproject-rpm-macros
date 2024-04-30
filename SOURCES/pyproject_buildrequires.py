@@ -328,6 +328,11 @@ def generate_run_requirements_wheel(backend, requirements, wheeldir):
     # Reuse the wheel from the previous round of %pyproject_buildrequires (if it exists)
     wheel = find_built_wheel(wheeldir)
     if not wheel:
+        # pip is already echoed from the macro
+        # but we need to explicitly restart if has not yet been installed
+        # see https://bugzilla.redhat.com/2169855
+        requirements.add('pip >= 19', source='%pyproject_buildrequires -w')
+        requirements.check(source='%pyproject_buildrequires -w')
         import pyproject_wheel
         returncode = pyproject_wheel.build_wheel(
             wheeldir=wheeldir,
@@ -386,7 +391,7 @@ def generate_tox_requirements(toxenv, requirements):
         provision_content = provision.read()
         if provision_content and r.returncode != 0:
             provision_requires = json.loads(provision_content)
-            if 'minversion' in provision_requires:
+            if provision_requires.get('minversion') is not None:
                 requirements.add(f'tox >= {provision_requires["minversion"]}',
                                  source='tox provision (minversion)')
             if 'requires' in provision_requires:

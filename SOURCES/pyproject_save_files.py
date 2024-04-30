@@ -345,7 +345,7 @@ def classify_paths(
     }
 
     license_files = metadata.get_all('License-File')
-    license_directory = distinfo / 'licenses'  # See PEP 369 "Root License Directory"
+    license_directory = distinfo / 'licenses'  # See PEP 639 "Root License Directory"
     # setuptools was the first known build backend to implement License-File.
     # Unfortunately they don't put licenses to the license directory (yet):
     #     https://github.com/pypa/setuptools/issues/3596
@@ -673,7 +673,7 @@ def load_parsed_record(pyproject_record):
         content = json.load(pyproject_record_file)
 
     if len(content) > 1:
-        raise FileExistsError("%pyproject install has found more than one *.dist-info/RECORD file. "
+        raise FileExistsError("%pyproject_install has found more than one *.dist-info/RECORD file. "
                               "Currently, %pyproject_save_files supports only one wheel → one file list mapping. "
                               "Feel free to open a bugzilla for pyproject-rpm-macros and describe your usecase.")
 
@@ -693,12 +693,15 @@ def dist_metadata(buildroot, record_path):
     return dist.metadata
 
 
-def pyproject_save_files_and_modules(buildroot, sitelib, sitearch, python_version, pyproject_record, prefix, varargs):
+def pyproject_save_files_and_modules(buildroot, sitelib, sitearch, python_version, pyproject_record, prefix, assert_license, varargs):
     """
     Takes arguments from the %{pyproject_save_files} macro
 
     Returns tuple: list of paths for the %files section and list of module names
     for the %check section
+
+    Raises ValueError when assert_license is true and no License-File (PEP 639)
+    is found.
     """
     # On 32 bit architectures, sitelib equals to sitearch
     # This saves us browsing one directory twice
@@ -710,17 +713,30 @@ def pyproject_save_files_and_modules(buildroot, sitelib, sitearch, python_versio
     final_file_list = []
     final_module_list = []
 
+    # we assume OK when not asserting
+    license_ok = not assert_license
+
     for record_path, files in parsed_records.items():
         metadata = dist_metadata(buildroot, record_path)
         paths_dict = classify_paths(
             record_path, files, metadata, sitedirs, python_version, prefix
         )
+        license_ok = license_ok or bool(paths_dict["metadata"]["licenses"])
 
         final_file_list.extend(
             generate_file_list(paths_dict, globs, include_auto)
         )
         final_module_list.extend(
             generate_module_list(paths_dict, globs)
+        )
+
+    if not license_ok:
+        raise ValueError(
+            "No License-File (PEP 639) in upstream metadata found. "
+            "Adjust the upstream metadata "
+            "if the project's build backend supports PEP 639 "
+            "or use `%pyproject_save_files -L` "
+            "and include the %license file in %files manually."
         )
 
     return final_file_list, final_module_list
@@ -734,6 +750,7 @@ def main(cli_args):
         cli_args.python_version,
         cli_args.pyproject_record,
         cli_args.prefix,
+        cli_args.assert_license,
         cli_args.varargs,
     )
 
@@ -747,7 +764,7 @@ def argparser():
         prog="%pyproject_save_files",
         add_help=False,
         # custom usage to add +auto
-        usage="%(prog)s MODULE_GLOB [MODULE_GLOB ...] [+auto]",
+        usage="%(prog)s  [-l|-L] MODULE_GLOB [MODULE_GLOB ...] [+auto]",
     )
     parser.add_argument(
         '--help', action='help',
@@ -763,6 +780,14 @@ def argparser():
     r.add_argument("--python-version", type=str, required=True, help=argparse.SUPPRESS)
     r.add_argument("--pyproject-record", type=PosixPath, required=True, help=argparse.SUPPRESS)
     r.add_argument("--prefix", type=PosixPath, required=True, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "-l", "--assert-license", action="store_true", default=False,
+        help="Fail when no License-File (PEP 639) is found.",
+    )
+    parser.add_argument(
+        "-L", "--no-assert-license", action="store_false", dest="assert_license",
+        help="Don't fail when no License-File (PEP 639) is found (the default).",
+    )
     parser.add_argument(
         "varargs", nargs="+", metavar="MODULE_GLOB",
         help="Shell-like glob matching top-level module names to save into %%{pyproject_files}",

@@ -288,6 +288,12 @@ However, in Fedora packages, always list executables explicitly to avoid uninten
 and  language (`*.mo`) files with `%lang` macro and appropriate language code.
 Only license files declared via [PEP 639] `License-File` field are detected.
 [PEP 639] is still a draft and can be changed in the future.
+It is possible to use the `-l` flag to declare that a missing license should
+terminate the build or `-L` (the default) to explicitly disable this check.
+Packagers are encouraged to use the `-l` flag when the `%license` file is not manually listed in `%files`
+to avoid accidentally losing the file in a future version.
+When the `%license` file is manually listed in `%files`,
+packagers can use the `-L` flag to ensure future compatibility in case the `-l` behavior eventually becomes a default.
 
 Note that `%pyproject_save_files` uses data from the [RECORD file](https://www.python.org/dev/peps/pep-0627/).
 If you wish to rename, remove or otherwise change the installed files of a package
@@ -341,6 +347,12 @@ The reason should be documented in a comment.
 The `%pyproject_check_import` macro also accepts positional arguments with
 additional qualified module names to check, useful for example if some modules are installed manually.
 Note that filtering by `-t`/`-e` also applies to the positional arguments.
+
+Another macro, `%_pyproject_check_import_allow_no_modules` allows to pass the import check,
+even if no Python modules are detected in the package.
+This may be a valid case for packages containing e.g. typing stubs.
+Don't use this macro in Fedora packages.
+It's only intended to be used in automated build environments such as Copr.
 
 
 Generating Extras subpackages

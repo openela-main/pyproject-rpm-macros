@@ -13,7 +13,7 @@ License:        MIT
 #   Increment Y and reset Z when new macros or features are added
 #   Increment Z when this is a bugfix or a cosmetic change
 # Dropping support for EOL Fedoras is *not* considered a breaking change
-Version:        1.9.0
+Version:        1.12.0
 Release:        1%{?dist}
 
 # Macro files
@@ -63,13 +63,20 @@ BuildRequires:  python3dist(tox-current-env) >= 0.0.6
 BuildRequires:  python3dist(wheel)
 BuildRequires:  (python3dist(tomli) if python3 < 3.11)
 
-# RHEL 9: We also run pytest with Python 3.11
+# RHEL 9: We also run pytest with Python 3.11 and 3.12
 BuildRequires:  python3.11dist(pytest)
 BuildRequires:  python3.11dist(pyyaml)
 BuildRequires:  python3.11dist(packaging)
 BuildRequires:  python3.11dist(pip)
 BuildRequires:  python3.11dist(setuptools)
 BuildRequires:  python3.11dist(wheel)
+
+BuildRequires:  python3.12dist(pytest)
+BuildRequires:  python3.12dist(pyyaml)
+BuildRequires:  python3.12dist(packaging)
+BuildRequires:  python3.12dist(pip)
+BuildRequires:  python3.12dist(setuptools)
+BuildRequires:  python3.12dist(wheel)
 %endif
 
 # We build on top of those:
@@ -84,6 +91,12 @@ Requires:       (pyproject-srpm-macros = %{?epoch:%{epoch}:}%{version}-%{release
 # We use the following tools outside of coreutils
 Requires:       /usr/bin/find
 Requires:       /usr/bin/sed
+
+# This package requires the %%generate_buildrequires functionality.
+# It has been introduced in RPM 4.15 (4.14.90 is the alpha of 4.15).
+# What we need is rpmlib(DynamicBuildRequires), but that is impossible to (Build)Require.
+Requires:       (rpm-build >= 4.14.90 if rpm-build)
+BuildRequires:  rpm-build >= 4.14.90
 
 %description
 These macros allow projects that follow the Python packaging specifications
@@ -103,6 +116,7 @@ which only work with setup.py.
 %package -n pyproject-srpm-macros
 Summary:        Minimal implementation of %%pyproject_buildrequires
 Requires:       (pyproject-rpm-macros = %{?epoch:%{epoch}:}%{version}-%{release} if pyproject-rpm-macros)
+Requires:       (rpm-build >= 4.14.90 if rpm-build)
 
 %description -n pyproject-srpm-macros
 This package contains a minimal implementation of %%pyproject_buildrequires.
@@ -116,6 +130,9 @@ takes precedence.
 # of source numbers in install section
 %setup -c -T
 cp -p %{sources} .
+
+%generate_buildrequires
+# nothing to do, this is here just to assert we have that functionality
 
 %build
 # nothing to do, sources are not buildable
@@ -146,7 +163,11 @@ export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856
 %pytest -vv --doctest-modules %{?with_pytest_xdist:-n auto} %{!?with_tox_tests:-k "not tox"}
 
 # RHEL 9 only:
-%global __pytest %{__pytest}-3.11
+%global __pytest pytest-3.11
+%pytest -vv --doctest-modules -k "not tox"
+
+# RHEL 9 only:
+%global __pytest pytest-3.12
 %pytest -vv --doctest-modules -k "not tox"
 
 # brp-compress is provided as an argument to get the right directory macro expansion
@@ -173,6 +194,27 @@ export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856
 
 
 %changelog
+* Fri Jan 26 2024 Miro Hrončok <miro@hroncok.cz> - 1.12.0-1
+- Namespace pyproject-rpm-macros generated text files with %%{python3_pkgversion}
+- That way, a single-spec can be used to build packages for multiple Python versions
+- Fixes: rhbz#2209055
+
+* Wed Sep 27 2023 Miro Hrončok <mhroncok@redhat.com> - 1.11.0-1
+- Add the -l/-L flag to %%pyproject_save_files
+- The -l flag can be used to assert at least 1 License-File was detected
+- The -L flag explicitly disables this check (which remains the default)
+- Prevent incorrect usage of %%pyproject_buildrequires -R with -x/-e/-t
+- Fixes: rhbz#2244282
+- Show a better error message when %%pyproject_install finds no wheel
+- Fixes: rhbz#2242452
+- Fix %%pyproject_buildrequires -w when the build backend is already installed and pip isn't
+- Fixes: rhbz#2169855
+
+* Wed Sep 13 2023 Python Maint <python-maint@redhat.com> - 1.10.0-1
+- Add %%_pyproject_check_import_allow_no_modules for automated environments
+- Fix handling of tox 4 provision without an explicit tox minversion
+- Fixes: rhbz#2240590
+
 * Wed May 31 2023 Maxwell G <maxwell@gtmx.me> - 1.9.0-1
 - Allow passing config_settings to the build backend.
 
@@ -212,7 +254,8 @@ export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856
 - Use %%py3_test_envvars in %%tox when available
 
 * Mon Sep 19 2022 Python Maint <python-maint@redhat.com> - 1.4.0-1
-- %%pyproject_save_files: Support License-Files installed into the *Root License Directory* from PEP 369
+- %%pyproject_save_files: Support License-Files installed into the *Root License Directory* from PEP 639
+
 - %%pyproject_check_import: Import only the modules whose top-level names
   match any of the globs provided to %%pyproject_save_files
 
