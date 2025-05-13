@@ -10,6 +10,7 @@ import subprocess
 import re
 import tempfile
 import email.parser
+import functools
 import pathlib
 import zipfile
 
@@ -34,6 +35,7 @@ def print_err(*args, **kwargs):
 
 
 try:
+    from packaging.markers import Marker
     from packaging.requirements import Requirement, InvalidRequirement
     from packaging.utils import canonicalize_name
 except ImportError as e:
@@ -99,18 +101,23 @@ class Requirements:
                 return True
         return False
 
-    def add(self, requirement_str, *, package_name=None, source=None):
+    def add(self, requirement, *, package_name=None, source=None, extra=None):
         """Output a Python-style requirement string as RPM dep"""
+
+        requirement_str = str(requirement)
         print_err(f'Handling {requirement_str} from {source}')
 
-        try:
-            requirement = Requirement(requirement_str)
-        except InvalidRequirement:
-            hint = guess_reason_for_invalid_requirement(requirement_str)
-            message = f'Requirement {requirement_str!r} from {source} is invalid.'
-            if hint:
-                message += f' Hint: {hint}'
-            raise ValueError(message)
+        # requirements read initially from the metadata are strings
+        # further on we work with them as Requirement instances
+        if not isinstance(requirement, Requirement):
+            try:
+                requirement = Requirement(requirement)
+            except InvalidRequirement:
+                hint = guess_reason_for_invalid_requirement(requirement)
+                message = f'Requirement {requirement!r} from {source} is invalid.'
+                if hint:
+                    message += f' Hint: {hint}'
+                raise ValueError(message)
 
         if requirement.url:
             print_err(
@@ -118,10 +125,17 @@ class Requirements:
             )
 
         name = canonicalize_name(requirement.name)
+
+        if extra is not None:
+            extra_str = f'extra == "{extra}"'
+            if requirement.marker is not None:
+                extra_str = f'({requirement.marker}) and {extra_str}'
+            requirement.marker = Marker(extra_str)
+
         if (requirement.marker is not None and
                 not self.evaluate_all_environments(requirement)):
             print_err(f'Ignoring alien requirement:', requirement_str)
-            self.ignored_alien_requirements.append(requirement_str)
+            self.ignored_alien_requirements.append(requirement)
             return
 
         # Handle self-referencing requirements
@@ -215,7 +229,8 @@ def toml_load(opened_binary_file):
     return tomllib.load(opened_binary_file)
 
 
-def get_backend(requirements):
+@functools.cache
+def load_pyproject():
     try:
         f = open('pyproject.toml', 'rb')
     except FileNotFoundError:
@@ -223,6 +238,11 @@ def get_backend(requirements):
     else:
         with f:
             pyproject_data = toml_load(f)
+    return pyproject_data
+
+
+def get_backend(requirements):
+    pyproject_data = load_pyproject()
 
     buildsystem_data = pyproject_data.get('build-system', {})
     requirements.extend(
@@ -248,7 +268,6 @@ def get_backend(requirements):
         # with pyproject.toml without a specified build backend.
         # If the default requirements change, also change them in the macro!
         requirements.add('setuptools >= 40.8', source='default build backend')
-        requirements.add('wheel', source='default build backend')
 
     requirements.check(source='build backend')
 
@@ -302,7 +321,9 @@ def generate_run_requirements_hook(backend, requirements):
         raise ValueError(
             'The build backend cannot provide build metadata '
             '(incl. runtime requirements) before build. '
-            'Use the provisional -w flag to build the wheel and parse the metadata from it, '
+            'If the dependencies are specified in the pyproject.toml [project] '
+            'table, you can use the -p flag to read them.'
+            'Alternatively, use the provisional -w flag to build the wheel and parse the metadata from it, '
             'or use the -R flag not to generate runtime dependencies.'
         )
     dir_basename = prepare_metadata('.', config_settings=requirements.config_settings)
@@ -360,8 +381,35 @@ def generate_run_requirements_wheel(backend, requirements, wheeldir):
             raise RuntimeError('Could not find *.dist-info/METADATA in built wheel.')
 
 
-def generate_run_requirements(backend, requirements, *, build_wheel, wheeldir):
-    if build_wheel:
+def generate_run_requirements_pyproject(requirements):
+    pyproject_data = load_pyproject()
+
+    if not (project_table := pyproject_data.get('project', {})):
+        raise ValueError('Could not find the [project] table in pyproject.toml.')
+
+    dynamic_fields = project_table.get('dynamic', [])
+    if 'dependencies' in dynamic_fields or 'optional-dependencies' in dynamic_fields:
+        raise ValueError('Could not read the dependencies or optional-dependencies '
+            'from the [project] table in pyproject.toml, as the field is dynamic.')
+
+    dependencies = project_table.get('dependencies', [])
+    name = project_table.get('name')
+    requirements.extend(dependencies,
+                        package_name=name,
+                        source=f'pyproject.toml generated metadata: [dependencies] ({name})')
+
+    optional_dependencies = project_table.get('optional-dependencies', {})
+    for extra, dependencies in optional_dependencies.items():
+        requirements.extend(dependencies,
+                            package_name=name,
+                            source=f'pyproject.toml generated metadata: [optional-dependencies] {extra} ({name})',
+                            extra=extra)
+
+
+def generate_run_requirements(backend, requirements, *, build_wheel, read_pyproject_dependencies, wheeldir):
+    if read_pyproject_dependencies:
+        generate_run_requirements_pyproject(requirements)
+    elif build_wheel:
         generate_run_requirements_wheel(backend, requirements, wheeldir)
     else:
         generate_run_requirements_hook(backend, requirements)
@@ -411,6 +459,103 @@ def generate_tox_requirements(toxenv, requirements):
                             source=f'tox --print-deps-only: {toxenv}')
 
 
+def tox_dependency_groups(toxenv):
+    # We call this command separately instead of folding it into the previous one
+    # becasue --print-dependency-groups-to only works with tox 4.22+ and tox-current-env 0.0.14+.
+    # We handle failure gracefully: upstreams using dependency_groups should require tox >= 4.22.
+    toxenv = ','.join(toxenv)
+    with tempfile.NamedTemporaryFile('r') as groups:
+        r = subprocess.run(
+            [sys.executable, '-m', 'tox',
+             '--print-dependency-groups-to', groups.name,
+             '-q', '-e', toxenv],
+            check=False,
+            encoding='utf-8',
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if r.returncode == 0:
+            if r.stdout:
+                print_err(r.stdout, end='')
+            if output := groups.read().strip():
+                return output.splitlines()
+    return []
+
+
+def generate_dependency_groups(requested_groups, requirements):
+    """Adapted from https://peps.python.org/pep-0735/#reference-implementation (public domain)"""
+    from collections import defaultdict
+
+    def _normalize_name(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    def _normalize_group_names(dependency_groups: dict) -> dict:
+        original_names = defaultdict(list)
+        normalized_groups = {}
+
+        for group_name, value in dependency_groups.items():
+            normed_group_name = _normalize_name(group_name)
+            original_names[normed_group_name].append(group_name)
+            normalized_groups[normed_group_name] = value
+
+        errors = []
+        for normed_name, names in original_names.items():
+            if len(names) > 1:
+                errors.append(f"{normed_name} ({', '.join(names)})")
+        if errors:
+            raise ValueError(f"Duplicate dependency group names: {', '.join(errors)}")
+
+        return normalized_groups
+
+    def _resolve_dependency_group(
+        dependency_groups: dict, group: str, past_groups: tuple[str, ...] = ()
+    ) -> list[str]:
+        if group in past_groups:
+            raise ValueError(f"Cyclic dependency group include: {group} -> {past_groups}")
+
+        if group not in dependency_groups:
+            raise LookupError(f"Dependency group '{group}' not found")
+
+        raw_group = dependency_groups[group]
+        if not isinstance(raw_group, list):
+            raise ValueError(f"Dependency group '{group}' is not a list")
+
+        realized_group = []
+        for item in raw_group:
+            if isinstance(item, str):
+                realized_group.append(item)
+            elif isinstance(item, dict):
+                if tuple(item.keys()) != ("include-group",):
+                    raise ValueError(f"Invalid dependency group item: {item}")
+
+                include_group = _normalize_name(next(iter(item.values())))
+                realized_group.extend(
+                    _resolve_dependency_group(
+                        dependency_groups, include_group, past_groups + (group,)
+                    )
+                )
+            else:
+                raise ValueError(f"Invalid dependency group item: {item}")
+
+        return realized_group
+
+    def resolve(dependency_groups: dict, group: str) -> list[str]:
+        if not isinstance(dependency_groups, dict):
+            raise TypeError("Dependency Groups table is not a dict")
+        return _resolve_dependency_group(dependency_groups, _normalize_name(group))
+
+    pyproject_data = load_pyproject()
+    dependency_groups_raw = pyproject_data.get("dependency-groups", {})
+    dependency_groups = _normalize_group_names(dependency_groups_raw)
+
+    for group_names in requested_groups:
+        for group_name in group_names.split(","):
+            requirements.extend(
+                resolve(dependency_groups, group_name),
+                source=f"Dependency group {group_name}",
+            )
+
+
 def python3dist(name, op=None, version=None, python3_pkgversion="3"):
     prefix = f"python{python3_pkgversion}dist"
 
@@ -423,9 +568,10 @@ def python3dist(name, op=None, version=None, python3_pkgversion="3"):
 
 
 def generate_requires(
-    *, include_runtime=False, build_wheel=False, wheeldir=None, toxenv=None, extras=None,
+    *, include_runtime=False, build_wheel=False, wheeldir=None, toxenv=None, extras=None, dependency_groups=None,
     get_installed_version=importlib.metadata.version,  # for dep injection
     generate_extras=False, python3_pkgversion="3", requirement_files=None, use_build_system=True,
+    read_pyproject_dependencies=False,
     output, config_settings=None,
 ):
     """Generate the BuildRequires for the project in the current directory
@@ -441,9 +587,10 @@ def generate_requires(
         config_settings=config_settings,
     )
 
+    dependency_groups = dependency_groups or []
     try:
-        if (include_runtime or toxenv) and not use_build_system:
-            raise ValueError('-N option cannot be used in combination with -r, -e, -t, -x options')
+        if (include_runtime or toxenv or read_pyproject_dependencies) and not use_build_system:
+            raise ValueError('-N option cannot be used in combination with -r, -e, -t, -x, -p options')
         if requirement_files:
             for req_file in requirement_files:
                 requirements.extend(
@@ -457,8 +604,12 @@ def generate_requires(
         if toxenv:
             include_runtime = True
             generate_tox_requirements(toxenv, requirements)
+            dependency_groups.extend(tox_dependency_groups(toxenv))
+        if dependency_groups:
+            generate_dependency_groups(dependency_groups, requirements)
         if include_runtime:
-            generate_run_requirements(backend, requirements, build_wheel=build_wheel, wheeldir=wheeldir)
+            generate_run_requirements(backend, requirements, build_wheel=build_wheel,
+                read_pyproject_dependencies=read_pyproject_dependencies, wheeldir=wheeldir)
     except EndPass:
         return
     finally:
@@ -485,7 +636,7 @@ def main(argv):
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        '-p', '--python3_pkgversion', metavar='PYTHON3_PKGVERSION',
+        '--python3_pkgversion', metavar='PYTHON3_PKGVERSION',
         default="3", help=argparse.SUPPRESS,
     )
     parser.add_argument(
@@ -501,6 +652,11 @@ def main(argv):
              '(e.g. -x testing,feature-x) (implies --runtime, can be repeated)',
     )
     parser.add_argument(
+        '-g', '--dependency-groups', metavar='GROUPS', action='append',
+        help='comma separated list of dependency groups (PEP 735) for requirements '
+             '(e.g. -g tests,docs) (can be repeated)',
+    )
+    parser.add_argument(
         '-t', '--tox', action='store_true',
         help=('generate test tequirements from tox environment '
               '(implies --runtime)'),
@@ -514,6 +670,11 @@ def main(argv):
         '-w', '--wheel', action='store_true', default=False,
         help=('Generate run-time requirements by building the wheel '
               '(useful for build backends without the prepare_metadata_for_build_wheel hook)'),
+    )
+    parser.add_argument(
+        '-p', '--read-pyproject-dependencies', action='store_true', default=False,
+        help=('Generate dependencies from [project] table of pyproject.toml '
+              'instead of calling prepare_metadata_for_build_wheel hook)'),
     )
     parser.add_argument(
         '-R', '--no-runtime', action='store_false', dest='runtime',
@@ -563,10 +724,12 @@ def main(argv):
             wheeldir=args.wheeldir,
             toxenv=args.toxenv,
             extras=args.extras,
+            dependency_groups=args.dependency_groups,
             generate_extras=args.generate_extras,
             python3_pkgversion=args.python3_pkgversion,
             requirement_files=args.requirement_files,
             use_build_system=args.use_build_system,
+            read_pyproject_dependencies=args.read_pyproject_dependencies,
             output=args.output,
             config_settings=parse_config_settings_args(args.config_settings),
         )

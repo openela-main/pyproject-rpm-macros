@@ -25,6 +25,11 @@
 %_pyproject_record %{_builddir}/%{_pyproject_files_prefix}-pyproject-record
 %_pyproject_buildrequires %{_builddir}/%{_pyproject_files_prefix}-pyproject-buildrequires
 
+# Internal macro, takes %%set_build_flags and strips all the exports
+# TODO: Make such a list an actual source of %%set_build_flags (in redhat-rpm-config)
+# Cannot use %%gsub directly to preserve EL 9 compatibility
+%_pyproject_build_flags %{lua:local exports = rpm.expand('%{set_build_flags} ;'); print((exports:gsub('%s*;+%s+export%s+[%u_]+%s*;+%s*', ' ')))}
+
 # Avoid leaking %%{_pyproject_builddir} to pytest collection
 # https://bugzilla.redhat.com/show_bug.cgi?id=1935212
 # The value is read and used by the %%pytest and %%tox macros:
@@ -33,7 +38,8 @@
 %pyproject_wheel(C:) %{expand:\\\
 %_set_pytest_addopts
 mkdir -p "%{_pyproject_builddir}"
-CFLAGS="${CFLAGS:-${RPM_OPT_FLAGS}}" LDFLAGS="${LDFLAGS:-${RPM_LD_FLAGS}}" TMPDIR="%{_pyproject_builddir}" \\\
+%{_pyproject_build_flags} \\\
+TMPDIR="%{_pyproject_builddir}" \\\
 %{__python3} -Bs %{_rpmconfigdir}/redhat/pyproject_wheel.py %{?**} %{_pyproject_wheeldir}
 }
 
@@ -109,15 +115,15 @@ fi
 
 
 # Note: the three times nested questionmarked -i -f -F pattern means: If none of those options was used -- in that case, we inject our own -f
-%pyproject_extras_subpkg(n:i:f:F) %{expand:%{?python_extras_subpkg:%{python_extras_subpkg%{?!-i:%{?!-f:%{?!-F: -f %{_pyproject_ghost_distinfo}}}} %**}}}
+%pyproject_extras_subpkg(n:i:f:FaA) %{expand:%{?python_extras_subpkg:%{python_extras_subpkg%{?!-i:%{?!-f:%{?!-F: -f %{_pyproject_ghost_distinfo}}}} %**}}}
 
 
-# Escaping an actual percentage sign in path by 8 signs has been verified in RPM 4.16 and 4.17.
-# See this thread http://lists.rpm.org/pipermail/rpm-list/2021-June/002048.html
-# Since RPM 4.19, 2 signs are needed instead. 4.18.90+ is a pre-release of RPM 4.19.
-# On the CI, we build tests/escape_percentages.spec to verify the assumptions.
+# Escaping shell-globs, percentage signs and spaces was reworked in RPM 4.19+
+# https://github.com/rpm-software-management/rpm/issues/1749#issuecomment-1020420616
+# Since we support both ways, we pass either 4.19 or 4.18 to the script, so it knows which one to use
+# Rather than passing the actual version, we let RPM compare the versions, as it is easier done here than in Python
 %pyproject_save_files(lL) %{expand:\\\
-%{expr:v"0%{?rpmversion}" >= v"4.18.90" ? "RPM_PERCENTAGES_COUNT=2" : "RPM_PERCENTAGES_COUNT=8" } \\
+%{expr:v"0%{?rpmversion}" >= v"4.18.90" ? "RPM_FILES_ESCAPE=4.19" : "RPM_FILES_ESCAPE=4.18" } \\
 %{__python3} %{_rpmconfigdir}/redhat/pyproject_save_files.py \\
   --output-files "%{pyproject_files}" \\
   --output-modules "%{_pyproject_modules}" \\
@@ -152,13 +158,17 @@ fi
 %default_toxenv py%{python3_version_nodots}
 %toxenv %{default_toxenv}
 
+%_pyproject_tomlidep %["%{python3_pkgversion}" == "3"\
+    ? "echo '(python%{python3_pkgversion}dist(tomli) if python%{python3_pkgversion}-devel < 3.11)'"\
+    : "%[v"%{python3_pkgversion}" < v"3.11"\
+       ? "echo 'python%{python3_pkgversion}dist(tomli)'"\
+       : "true # will use tomllib, echo nothing"\
+    ]"\
+  ]
 
 # Note: Keep the options in sync with this macro from macros.aaa-pyproject-srpm
-%pyproject_buildrequires(rRxtNwe:C:) %{expand:\\\
+%pyproject_buildrequires(rRxtNwpe:g:C:) %{expand:\\\
 %_set_pytest_addopts
-# The _auto_set_build_flags feature does not do this in %%generate_buildrequires section,
-# but we want to get an environment consistent with %%build:
-%{?_auto_set_build_flags:%set_build_flags}
 # The default flags expect the package note file to exist
 # see https://bugzilla.redhat.com/show_bug.cgi?id=2097535
 %{?_package_note_flags:%_generate_package_note_file}
@@ -168,6 +178,7 @@ fi
 %{-e:%{error:The -R and -e options are mutually exclusive}}
 %{-t:%{error:The -R and -t options are mutually exclusive}}
 %{-w:%{error:The -R and -w options are mutually exclusive}}
+%{-p:%{error:The -R and -p options are mutually exclusive}}
 }
 %{-N:
 %{-r:%{error:The -N and -r options are mutually exclusive}}
@@ -175,25 +186,25 @@ fi
 %{-e:%{error:The -N and -e options are mutually exclusive}}
 %{-t:%{error:The -N and -t options are mutually exclusive}}
 %{-w:%{error:The -N and -w options are mutually exclusive}}
+%{-p:%{error:The -N and -p options are mutually exclusive}}
 %{-C:%{error:The -N and -C options are mutually exclusive}}
+%{-g:if [ -f pyproject.toml ]; then
+  %_pyproject_tomlidep
+fi}
+}
+%{-w:
+%{-p:%{error:The -w and -p options are mutually exclusive}}
 }
 %{-e:%{expand:%global toxenv %(%{__python3} -s %{_rpmconfigdir}/redhat/pyproject_construct_toxenv.py %{?**})}}
 echo 'pyproject-rpm-macros'  # first stdout line matches the implementation in macros.aaa-pyproject-srpm
 echo 'python%{python3_pkgversion}-devel'
-echo 'python%{python3_pkgversion}dist(pip) >= 19'
 echo 'python%{python3_pkgversion}dist(packaging)'
-%{!-N:if [ -f pyproject.toml ]; then
-  %["%{python3_pkgversion}" == "3"
-    ? "echo '(python%{python3_pkgversion}dist(tomli) if python%{python3_pkgversion}-devel < 3.11)'"
-    : "%[v"%{python3_pkgversion}" < v"3.11"
-       ? "echo 'python%{python3_pkgversion}dist(tomli)'"
-       : "true # will use tomllib, echo nothing"
-    ]"
-  ]
+%{!-N:echo 'python%{python3_pkgversion}dist(pip) >= 19'
+if [ -f pyproject.toml ]; then
+  %_pyproject_tomlidep
 elif [ -f setup.py ]; then
   # Note: If the default requirements change, also change them in the script!
   echo 'python%{python3_pkgversion}dist(setuptools) >= 40.8'
-  echo 'python%{python3_pkgversion}dist(wheel)'
 else
   echo 'ERROR: Neither pyproject.toml nor setup.py found, consider using %%%%pyproject_buildrequires -N <requirements-file> if this is not a Python package.' >&2
   exit 1
@@ -203,7 +214,8 @@ rm -rfv *.dist-info/ >&2
 if [ -f %{__python3} ]; then
   mkdir -p "%{_pyproject_builddir}"
   echo -n > %{_pyproject_buildrequires}
-  CFLAGS="${CFLAGS:-${RPM_OPT_FLAGS}}" LDFLAGS="${LDFLAGS:-${RPM_LD_FLAGS}}" TMPDIR="%{_pyproject_builddir}" \\\
+  %{_pyproject_build_flags} \\\
+  TMPDIR="%{_pyproject_builddir}" \\\
   RPM_TOXENV="%{toxenv}" HOSTNAME="rpmbuild" %{__python3} -Bs %{_rpmconfigdir}/redhat/pyproject_buildrequires.py %{?!_python_no_extras_requires:--generate-extras} --python3_pkgversion %{python3_pkgversion} --wheeldir %{_pyproject_wheeldir} --output %{_pyproject_buildrequires} %{?**} >&2
   cat %{_pyproject_buildrequires}
 fi
@@ -221,3 +233,13 @@ PYTHONPATH="${PYTHONPATH:-%{buildroot}%{python3_sitearch}:%{buildroot}%{python3_
 HOSTNAME="rpmbuild" \\
 %{__python3} -m tox --current-env -q --recreate -e "%{-e:%{-e*}}%{!-e:%{toxenv}}" %{?*}
 }
+
+
+# Declarative buildsystem, requires RPM 4.20+ to work
+# https://rpm-software-management.github.io/rpm/manual/buildsystem.html
+%buildsystem_pyproject_conf() %nil
+%buildsystem_pyproject_generate_buildrequires() %pyproject_buildrequires %*
+%buildsystem_pyproject_build() %pyproject_wheel %*
+%buildsystem_pyproject_install() %["%{shrink:%*}" == "" ? "%{error:BuildOption(install) is mandatory with pyproject BuildSystem.}" : "%pyproject_install \
+%pyproject_save_files %*"]
+%buildsystem_pyproject_check() %pyproject_check_import %*

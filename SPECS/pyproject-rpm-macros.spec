@@ -1,5 +1,6 @@
 Name:           pyproject-rpm-macros
 Summary:        RPM macros for PEP 517 Python packages
+# SPDX
 License:        MIT
 
 %bcond tests 1
@@ -13,7 +14,7 @@ License:        MIT
 #   Increment Y and reset Z when new macros or features are added
 #   Increment Z when this is a bugfix or a cosmetic change
 # Dropping support for EOL Fedoras is *not* considered a breaking change
-Version:        1.12.0
+Version:        1.16.2
 Release:        1%{?dist}
 
 # Macro files
@@ -95,7 +96,8 @@ Requires:       /usr/bin/sed
 # This package requires the %%generate_buildrequires functionality.
 # It has been introduced in RPM 4.15 (4.14.90 is the alpha of 4.15).
 # What we need is rpmlib(DynamicBuildRequires), but that is impossible to (Build)Require.
-Requires:       (rpm-build >= 4.14.90 if rpm-build)
+# Also, we need to avoid 4.19.90..4.19.91-7 due to rhbz#2284187
+Requires:       ((rpm-build >= 4.14.90 with (rpm-build < 4.19.90 or rpm-build >= 4.19.91-8)) if rpm-build)
 BuildRequires:  rpm-build >= 4.14.90
 
 %description
@@ -194,6 +196,47 @@ export HOSTNAME="rpmbuild"  # to speedup tox in network-less mock, see rhbz#1856
 
 
 %changelog
+* Wed Nov 13 2024 Miro Hrončok <mhroncok@redhat.com> - 1.16.2-1
+- Fix one remaining test for setuptools 70+
+
+* Thu Nov 07 2024 Miro Hrončok <miro@hroncok.cz> - 1.16.1-1
+- Support for setuptools 70+
+- wheel is no longer generated as a dependency of the default build system
+
+* Mon Nov 04 2024 Miro Hrončok <mhroncok@redhat.com> - 1.16.0-1
+- %%pyproject_buildrequires: Add support for dependency groups (PEP 735), via the -g flag
+- This is implied when used tox testenvs depend on dependency groups (requires tox 4.22+)
+- Fixes: rhbz#2318849
+
+* Thu Oct 03 2024 Karolina Surma <ksurma@redhat.com> - 1.15.1-1
+- Fix handling of self-referencing extras when reading pyproject.toml
+
+* Tue Sep 17 2024 Python Maint <python-maint@redhat.com> - 1.15.0-1
+- Add a possibility to read runtime requirements from pyproject.toml [project] table
+- Fixes: rhbz#2261939
+- Don't generate a dependency on pip when %%pyproject_buildrequires -N is used
+- Fixes: rhbz#2294510
+- Even when %%_auto_set_build_flags is disabled, set all compiler flags when building wheels
+- Fixes: rhbz#2293616
+
+* Tue Jul 23 2024 Miro Hrončok <mhroncok@redhat.com> - 1.14.0-1
+- Add a provisional RPM Declarative Buildsystem (RPM 4.20+)
+
+* Fri Jul 19 2024 Fedora Release Engineering <releng@fedoraproject.org> - 1.13.0-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_41_Mass_Rebuild
+
+* Tue Jul 02 2024 Miro Hrončok <mhroncok@redhat.com> - 1.13.0-1
+- Properly escape weird characters from paths in %%{pyproject_files} (RPM 4.19+ only)
+- Revert the temporary workaround for RPM 4.20 alpha 2 leaking \x1f (unit separators)
+- Fixes: rhbz#1990879
+
+* Tue Jun 25 2024 Cristian Le <fedora@lecris.me> - 1.12.2-1
+- %%pyproject_extras_subpkg: Allow passing -a or -A to %%python_extras_subpkg
+
+* Tue Jun 04 2024 Miro Hrončok <mhroncok@redhat.com> - 1.12.1-1
+- Add a temporary workaround for RPM 4.20 alpha 2 leaking \x1f (unit separators)
+- Related: rhbz#2284187
+
 * Fri Jan 26 2024 Miro Hrončok <miro@hroncok.cz> - 1.12.0-1
 - Namespace pyproject-rpm-macros generated text files with %%{python3_pkgversion}
 - That way, a single-spec can be used to build packages for multiple Python versions
