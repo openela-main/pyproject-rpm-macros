@@ -22,6 +22,15 @@ from pyproject_wheel import parse_config_settings_args
 # Allow only the forms we know we can handle.
 VERSION_RE = re.compile(r'[a-zA-Z0-9.-]+(\.\*)?')
 
+# To avoid breakage on Fedora 40-42,
+# we don't assert tox configuration there.
+# This can be removed when Fedora 42 goes EOL.
+# Note that %tox still uses --assert-config
+# because %tox without config is dangerous (false sense of tests).
+# Running %pyproject_buildrequires -t/-e without tox config is wrong, but not dangerous.
+FEDORA = int(os.getenv('FEDORA') or 0)
+TOX_ASSERT_CONFIG_OPTS = () if 40 <= FEDORA < 43 else ('--assert-config',)
+
 
 class EndPass(Exception):
     """End current pass of generating requirements"""
@@ -290,7 +299,7 @@ def get_backend(requirements):
 def generate_build_requirements(backend, requirements):
     get_requires = getattr(backend, 'get_requires_for_build_wheel', None)
     if get_requires:
-        new_reqs = get_requires(config_settings=requirements.config_settings)
+        new_reqs = get_requires(requirements.config_settings)
         requirements.extend(new_reqs, source='get_requires_for_build_wheel')
         requirements.check(source='get_requires_for_build_wheel')
 
@@ -300,7 +309,7 @@ def parse_metadata_file(metadata_file):
 
 
 def requires_from_parsed_metadata_file(message):
-    return {k: message.get_all(k, ()) for k in ('Requires', 'Requires-Dist')}
+    return {k: message.get_all(k, ()) for k in ('Requires-Dist',)}
 
 
 def package_name_from_parsed_metadata_file(message):
@@ -322,11 +331,10 @@ def generate_run_requirements_hook(backend, requirements):
             'The build backend cannot provide build metadata '
             '(incl. runtime requirements) before build. '
             'If the dependencies are specified in the pyproject.toml [project] '
-            'table, you can use the -p flag to read them.'
-            'Alternatively, use the provisional -w flag to build the wheel and parse the metadata from it, '
-            'or use the -R flag not to generate runtime dependencies.'
+            'table, you can use the -p flag to read them. '
+            'Alternatively, use the -R flag not to generate runtime dependencies.'
         )
-    dir_basename = prepare_metadata('.', config_settings=requirements.config_settings)
+    dir_basename = prepare_metadata('.', requirements.config_settings)
     with open(dir_basename + '/METADATA') as metadata_file:
         name, requires = package_name_and_requires_from_metadata_file(metadata_file)
         for key, req in requires.items():
@@ -417,7 +425,7 @@ def generate_run_requirements(backend, requirements, *, build_wheel, read_pyproj
 
 def generate_tox_requirements(toxenv, requirements):
     toxenv = ','.join(toxenv)
-    requirements.add('tox-current-env >= 0.0.6', source='tox itself')
+    requirements.add('tox-current-env >= 0.0.16', source='tox itself')
     requirements.check(source='tox itself')
     with tempfile.NamedTemporaryFile('r') as deps, \
         tempfile.NamedTemporaryFile('r') as extras, \
@@ -427,6 +435,7 @@ def generate_tox_requirements(toxenv, requirements):
              '--print-deps-to', deps.name,
              '--print-extras-to', extras.name,
              '--no-provision', provision.name,
+             *TOX_ASSERT_CONFIG_OPTS,
              '-q', '-r', '-e', toxenv],
             check=False,
             encoding='utf-8',
@@ -669,7 +678,7 @@ def main(argv):
     parser.add_argument(
         '-w', '--wheel', action='store_true', default=False,
         help=('Generate run-time requirements by building the wheel '
-              '(useful for build backends without the prepare_metadata_for_build_wheel hook)'),
+              '(useful for build backends without the prepare_metadata_for_build_wheel hook, deprecated)'),
     )
     parser.add_argument(
         '-p', '--read-pyproject-dependencies', action='store_true', default=False,
